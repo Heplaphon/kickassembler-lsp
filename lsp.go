@@ -41,14 +41,16 @@ func main() {
 
     // Use a buffered writer to ensure responses are flushed
     stream := jsonrpc2.NewBufferedStream(stdrwc{}, jsonrpc2.VSCodeObjectCodec{})
-    conn := jsonrpc2.NewConn(context.Background(), stream, server{})
+    conn := jsonrpc2.NewConn(context.Background(), stream, &server{
+        cancelMap: make(map[jsonrpc2.ID]context.CancelFunc),
+    })
     defer conn.Close()
 
     log.Println("LSP server started.")
     <-conn.DisconnectNotify()
 }
 
-func (s server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
+func (s *server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
     log.Printf("Received request: %+v", req)
 
     switch req.Method {
@@ -93,29 +95,17 @@ func (s server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.R
         // Handle document opening and changes if needed
         log.Printf("Handling %s request", req.Method)
     case "textDocument/completion":
-        var params lsp.CompletionParams
-        if err := json.Unmarshal(*req.Params, &params); err != nil {
-            log.Printf("Failed to unmarshal completion params: %v", err)
-            conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
-                Code:    jsonrpc2.CodeInvalidParams,
-                Message: "Invalid completion parameters",
-            })
-            return
-        }
-        items := []lsp.CompletionItem{}
-        for _, instr := range assemblerInstructions {
-            items = append(items, lsp.CompletionItem{
-                Label: instr,
-                Kind:  lsp.CIKOperator,
-            })
-        }
-        log.Printf("Sending completion result: %+v", items)
-        if err := conn.Reply(ctx, req.ID, lsp.CompletionList{
-            IsIncomplete: false,
-            Items:        items,
-        }); err != nil {
-            log.Printf("Failed to send completion result: %v", err)
-        }
+        ctx, cancel := context.WithCancel(ctx)
+        s.mu.Lock()
+        s.cancelMap[req.ID] = cancel
+        s.mu.Unlock()
+
+        go func() {
+            s.handleCompletion(ctx, conn, req)
+            s.mu.Lock()
+            delete(s.cancelMap, req.ID)
+            s.mu.Unlock()
+        }()
     case "completionItem/resolve":
         var item lsp.CompletionItem
         if err := json.Unmarshal(*req.Params, &item); err != nil {
@@ -131,6 +121,20 @@ func (s server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.R
         if err := conn.Reply(ctx, req.ID, item); err != nil {
             log.Printf("Failed to send resolved completion item: %v", err)
         }
+    case "$/cancelRequest":
+        var params struct {
+            ID jsonrpc2.ID `json:"id"`
+        }
+        if err := json.Unmarshal(*req.Params, &params); err != nil {
+            log.Printf("Failed to unmarshal cancel request params: %v", err)
+            return
+        }
+        s.mu.Lock()
+        if cancel, ok := s.cancelMap[params.ID]; ok {
+            cancel()
+            delete(s.cancelMap, params.ID)
+        }
+        s.mu.Unlock()
     case "shutdown":
         log.Println("Received shutdown request")
         if err := conn.Reply(ctx, req.ID, nil); err != nil {
@@ -147,6 +151,41 @@ func (s server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.R
         }); err != nil {
             log.Printf("Failed to send error response: %v", err)
         }
+    }
+}
+
+func (s *server) handleCompletion(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
+    select {
+    case <-ctx.Done():
+        log.Printf("Request %v cancelled", req.ID)
+        return
+    default:
+    }
+
+    var params lsp.CompletionParams
+    if err := json.Unmarshal(*req.Params, &params); err != nil {
+        log.Printf("Failed to unmarshal completion params: %v", err)
+        conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+            Code:    jsonrpc2.CodeInvalidParams,
+            Message: "Invalid completion parameters",
+        })
+        return
+    }
+
+    items := []lsp.CompletionItem{}
+    for _, instr := range assemblerInstructions {
+        items = append(items, lsp.CompletionItem{
+            Label: instr,
+            Kind:  lsp.CIKKeyword,
+        })
+    }
+
+    log.Printf("Sending completion result: %+v", items)
+    if err := conn.Reply(ctx, req.ID, lsp.CompletionList{
+        IsIncomplete: false,
+        Items:        items,
+    }); err != nil {
+        log.Printf("Failed to send completion result: %v", err)
     }
 }
 
