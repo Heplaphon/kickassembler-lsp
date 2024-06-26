@@ -82,15 +82,18 @@ func (s server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.R
         }
 
         s.stdout.Flush() // Ensure the output is flushed
-    case "textDocument/didOpen", "textDocument/didChange":
-        // Handle document opening and changes if needed
+    case "initialized":
         log.Printf("Handling %s request", req.Method)
+    case "textDocument/didOpen":
         var params lsp.DidOpenTextDocumentParams
         if err := json.Unmarshal(*req.Params, &params); err != nil {
             log.Printf("Failed to unmarshal didOpen params: %v", err)
             return
         }
         log.Printf("Document opened: %s", params.TextDocument.URI)
+    case "textDocument/didChange":
+        // Handle document opening and changes if needed
+        log.Printf("Handling %s request", req.Method)
     case "textDocument/completion":
         var params lsp.CompletionParams
         if err := json.Unmarshal(*req.Params, &params); err != nil {
@@ -116,6 +119,21 @@ func (s server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.R
             log.Printf("Failed to send completion result: %v", err)
         }
         s.stdout.Flush() // Ensure the output is flushed
+    case "completionItem/resolve":
+        var item lsp.CompletionItem
+        if err := json.Unmarshal(*req.Params, &item); err != nil {
+            log.Printf("Failed to unmarshal completion item resolve params: %v", err)
+            conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+                Code:    jsonrpc2.CodeInvalidParams,
+                Message: "Invalid completion item parameters",
+            })
+            return
+        }
+
+        log.Printf("Resolved completion item: %+v", item)
+        if err := conn.Reply(ctx, req.ID, item); err != nil {
+            log.Printf("Failed to send resolved completion item: %v", err)
+        }
     case "shutdown":
         log.Println("Received shutdown request")
         if err := conn.Reply(ctx, req.ID, nil); err != nil {
