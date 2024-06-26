@@ -1,11 +1,11 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"log"
 	"os"
+        "sync"
 
 	"github.com/sourcegraph/go-lsp"
 	"github.com/sourcegraph/jsonrpc2"
@@ -24,7 +24,8 @@ var assemblerInstructions = []string{
 }
 
 type server struct {
-    stdout *bufio.Writer
+    mu        sync.Mutex
+    cancelMap map[jsonrpc2.ID]context.CancelFunc
 }
 
 func main() {
@@ -39,9 +40,8 @@ func main() {
     log.Println("Starting LSP server...")
 
     // Use a buffered writer to ensure responses are flushed
-    stdout := bufio.NewWriter(os.Stdout)
     stream := jsonrpc2.NewBufferedStream(stdrwc{}, jsonrpc2.VSCodeObjectCodec{})
-    conn := jsonrpc2.NewConn(context.Background(), stream, server{stdout: stdout})
+    conn := jsonrpc2.NewConn(context.Background(), stream, server{})
     defer conn.Close()
 
     log.Println("LSP server started.")
@@ -80,8 +80,6 @@ func (s server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.R
         if err := conn.Reply(ctx, req.ID, result); err != nil {
             log.Printf("Failed to send initialize result: %v", err)
         }
-
-        s.stdout.Flush() // Ensure the output is flushed
     case "initialized":
         log.Printf("Handling %s request", req.Method)
     case "textDocument/didOpen":
@@ -118,7 +116,6 @@ func (s server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.R
         }); err != nil {
             log.Printf("Failed to send completion result: %v", err)
         }
-        s.stdout.Flush() // Ensure the output is flushed
     case "completionItem/resolve":
         var item lsp.CompletionItem
         if err := json.Unmarshal(*req.Params, &item); err != nil {
@@ -139,7 +136,6 @@ func (s server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.R
         if err := conn.Reply(ctx, req.ID, nil); err != nil {
             log.Printf("Failed to send shutdown response: %v", err)
         }
-        s.stdout.Flush() // Ensure the output is flushed
     case "exit":
         log.Println("Received exit request")
         os.Exit(0)
@@ -151,7 +147,6 @@ func (s server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.R
         }); err != nil {
             log.Printf("Failed to send error response: %v", err)
         }
-        s.stdout.Flush() // Ensure the output is flushed
     }
 }
 
