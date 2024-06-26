@@ -12,7 +12,15 @@ import (
 )
 
 var assemblerInstructions = []string{
-    "MOV", "ADD", "SUB", "MUL", "DIV", "JMP", "CMP", "JE", "JNE",
+    "ADC", "SBC",
+    "DEC", "DEX", "DEY",
+    "INC", "INX", "INY",
+    "LDA", "LDX", "LDY",
+    "STA", "STX", "STY",
+    "TAX", "TAY", "TXS", "TXA", "TYA", "TSX",
+    "PHA", "PHP",
+    "PLA", "PLP",
+    "CMP", "CPX", "CPY",
 }
 
 type server struct {
@@ -77,6 +85,12 @@ func (s server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.R
     case "textDocument/didOpen", "textDocument/didChange":
         // Handle document opening and changes if needed
         log.Printf("Handling %s request", req.Method)
+        var params lsp.DidOpenTextDocumentParams
+        if err := json.Unmarshal(*req.Params, &params); err != nil {
+            log.Printf("Failed to unmarshal didOpen params: %v", err)
+            return
+        }
+        log.Printf("Document opened: %s", params.TextDocument.URI)
     case "textDocument/completion":
         var params lsp.CompletionParams
         if err := json.Unmarshal(*req.Params, &params); err != nil {
@@ -91,7 +105,7 @@ func (s server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.R
         for _, instr := range assemblerInstructions {
             items = append(items, lsp.CompletionItem{
                 Label: instr,
-                Kind:  lsp.CIKKeyword,
+                Kind:  lsp.CIKOperator,
             })
         }
         log.Printf("Sending completion result: %+v", items)
