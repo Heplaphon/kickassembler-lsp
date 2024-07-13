@@ -11,7 +11,7 @@ import (
 	"github.com/sourcegraph/jsonrpc2"
 )
 
-var assemblerInstructions = []string{
+var oldAssemblerInstructions = []string{
     "ADC", "SBC",
     "DEC", "DEX", "DEY",
     "INC", "INX", "INY",
@@ -21,7 +21,10 @@ var assemblerInstructions = []string{
     "PHA", "PHP",
     "PLA", "PLP",
     "CMP", "CPX", "CPY",
+    "AND", "ORA", "EOR", "BIT",
 }
+
+var assemblerInstructions []lsp.CompletionItem
 
 type server struct {
     mu        sync.Mutex
@@ -64,6 +67,11 @@ func (s *server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.
             })
             return
         }
+        err := json.Unmarshal(instructionsJsonString, &assemblerInstructions)
+        if err != nil {
+		log.Println("error:", err)
+	}
+
         result := lsp.InitializeResult{
             Capabilities: lsp.ServerCapabilities{
                 TextDocumentSync: &lsp.TextDocumentSyncOptionsOrKind{
@@ -174,10 +182,7 @@ func (s *server) handleCompletion(ctx context.Context, conn *jsonrpc2.Conn, req 
 
     items := []lsp.CompletionItem{}
     for _, instr := range assemblerInstructions {
-        items = append(items, lsp.CompletionItem{
-            Label: instr,
-            Kind:  lsp.CIKKeyword,
-        })
+        items = append(items, instr)
     }
 
     log.Printf("Sending completion result: %+v", items)
