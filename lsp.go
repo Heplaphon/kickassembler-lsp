@@ -3,9 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+        "fmt"
 	"log"
 	"os"
+        "sort"
         "sync"
+        "strings"
+        "strconv"
 
 	"github.com/sourcegraph/go-lsp"
 	"github.com/sourcegraph/jsonrpc2"
@@ -181,9 +185,39 @@ func (s *server) handleCompletion(ctx context.Context, conn *jsonrpc2.Conn, req 
     }
 
     items := []lsp.CompletionItem{}
-    for _, instr := range assemblerInstructions {
-        items = append(items, instr)
+    userInput := getLastWord(params.Position.Character)
+
+    if strings.HasPrefix(userInput, "#$") {
+        // Generate hex value suggestions
+        for i := 0; i <= 255; i++ {
+            hexValue := fmt.Sprintf("#$%02X", i)
+            if strings.HasPrefix(hexValue, userInput) {
+                items = append(items, lsp.CompletionItem{
+                    Label: hexValue,
+                    Kind:  lsp.CIKValue,
+                })
+            }
+        }
+    } else {
+        // Check if the last word can be parsed as an integer and convert to hex
+        if intValue, err := strconv.Atoi(userInput); err == nil {
+            hexValue := fmt.Sprintf("#$%02X", intValue)
+            items = append(items, lsp.CompletionItem{
+                Label: hexValue,
+                Kind:  lsp.CIKValue,
+                Detail: fmt.Sprintf("Hex value of %d", intValue),
+            })
+        }
+	for _, instr := range assemblerInstructions {
+	    if strings.HasPrefix(instr.Label, userInput) {
+		items = append(items, instr)
+            }
+	}
     }
+
+    sort.Slice(items, func(i, j int) bool {
+        return items[i].Label < items[j].Label
+    })
 
     log.Printf("Sending completion result: %+v", items)
     if err := conn.Reply(ctx, req.ID, lsp.CompletionList{
@@ -192,6 +226,14 @@ func (s *server) handleCompletion(ctx context.Context, conn *jsonrpc2.Conn, req 
     }); err != nil {
         log.Printf("Failed to send completion result: %v", err)
     }
+}
+
+func getLastWord(s string) string {
+    words := strings.Fields(s)
+    if len(words) == 0 {
+        return ""
+    }
+    return words[len(words)-1]
 }
 
 type stdrwc struct{}
