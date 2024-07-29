@@ -212,13 +212,12 @@ func (s *server) handleCompletion(ctx context.Context, conn *jsonrpc2.Conn, req 
     userInput := getTextUpToPosition(documentText, params.Position)
     userInput = strings.TrimSpace(userInput)
 
-
-    if strings.HasPrefix(userInput, "#$") {
-        log.Println("PING")
+    if strings.HasPrefix(getLastWord(userInput), "#$") {
         // Generate hex value suggestions
         for i := 0; i <= 255; i++ {
             hexValue := fmt.Sprintf("#$%02X", i)
-            if strings.HasPrefix(hexValue, userInput) {
+            hexValue = strings.ToLower(hexValue)
+            if strings.HasPrefix(hexValue, getLastWord(userInput)) {
                 items = append(items, lsp.CompletionItem{
                     Label: hexValue,
                     Kind:  lsp.CIKValue,
@@ -226,9 +225,8 @@ func (s *server) handleCompletion(ctx context.Context, conn *jsonrpc2.Conn, req 
             }
         }
     } else {
-        log.Println("PONG")
         // Check if the last word can be parsed as an integer and convert to hex
-        if intValue, err := strconv.Atoi(userInput); err == nil {
+        if intValue, err := strconv.Atoi(getLastWord(userInput)); err == nil {
             hexValue := fmt.Sprintf("#$%02X", intValue)
             items = append(items, lsp.CompletionItem{
                 Label: hexValue,
