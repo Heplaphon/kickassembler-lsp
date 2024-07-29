@@ -187,6 +187,18 @@ var instructionsJsonString = []byte(`
         "detail": "BIT",
         "documentation": "AND accumulator with address, only changing processor flags",
         "kind": 14
+    },
+    {
+        "label": "sei",
+        "detail": "SEI",
+        "documentation": "SEt Interrupt disable flag",
+        "kind": 14
+    },
+    {
+        "label": "cli",
+        "detail": "CLI",
+        "documentation": "CLear Interrupt disable flag",
+        "kind": 14
     }
 ]
 `)
