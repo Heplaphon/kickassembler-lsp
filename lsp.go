@@ -87,8 +87,8 @@ func (s *server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.
                     },
                 },
                 CompletionProvider: &lsp.CompletionOptions{
-                    ResolveProvider: false,
-                    TriggerCharacters: []string{" "}, // Trigger on space
+                    ResolveProvider: true,
+                    TriggerCharacters: []string{".",}, // Trigger on space
                 },
             },
         }
@@ -109,6 +109,18 @@ func (s *server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.
         s.mu.Unlock()
         log.Printf("Document opened: %s", params.TextDocument.URI)
     case "textDocument/didChange":
+        ctx, cancel := context.WithCancel(ctx)
+        s.mu.Lock()
+        log.Printf("Adding request %s to cancel map", req.ID)
+        s.cancelMap[req.ID] = func() {
+            cancel()
+            log.Printf("Cancelling request")
+            conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+                Code:    -32800,
+                Message: "Request cancelled",
+            })
+        }
+        s.mu.Unlock()
         var params lsp.DidChangeTextDocumentParams
         if err := json.Unmarshal(*req.Params, &params); err != nil {
             log.Printf("Failed to unmarshal didChange params: %v", err)
@@ -120,14 +132,22 @@ func (s *server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.
     case "textDocument/completion":
         ctx, cancel := context.WithCancel(ctx)
         s.mu.Lock()
-        s.cancelMap[req.ID] = cancel
+        log.Printf("Adding request %s to cancel map", req.ID)
+        s.cancelMap[req.ID] = func() {
+            cancel()
+            log.Printf("Cancelling request %s", req.ID)
+            conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+                Code:    -32800,
+                Message: "Request cancelled",
+            })
+        }
         s.mu.Unlock()
 
         go func() {
             s.handleCompletion(ctx, conn, req)
-            s.mu.Lock()
-            delete(s.cancelMap, req.ID)
-            s.mu.Unlock()
+            //s.mu.Lock()
+            //delete(s.cancelMap, req.ID)
+            //s.mu.Unlock()
         }()
     case "completionItem/resolve":
         var item lsp.CompletionItem
@@ -152,10 +172,15 @@ func (s *server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.
             log.Printf("Failed to unmarshal cancel request params: %v", err)
             return
         }
+        log.Printf("Cancelling request %s", params.ID)
+        log.Println(s.cancelMap)
         s.mu.Lock()
         if cancel, ok := s.cancelMap[params.ID]; ok {
+            log.Println("PING")
             cancel()
             delete(s.cancelMap, params.ID)
+        }else{
+            log.Println("This is not supposed to happen")
         }
         s.mu.Unlock()
     case "shutdown":
@@ -226,12 +251,15 @@ func (s *server) handleCompletion(ctx context.Context, conn *jsonrpc2.Conn, req 
         }
     } else {
         // Check if the last word can be parsed as an integer and convert to hex
+        log.Println(getLastWord(userInput))
         if intValue, err := strconv.Atoi(getLastWord(userInput)); err == nil {
             hexValue := fmt.Sprintf("#$%02X", intValue)
             items = append(items, lsp.CompletionItem{
                 Label: hexValue,
                 Kind:  lsp.CIKValue,
                 Detail: fmt.Sprintf("Hex value of %d", intValue),
+                SortText: fmt.Sprint(intValue),
+                FilterText: fmt.Sprint(intValue),
             })
         }
 	for _, instr := range assemblerInstructions {
@@ -245,9 +273,9 @@ func (s *server) handleCompletion(ctx context.Context, conn *jsonrpc2.Conn, req 
         return items[i].Label < items[j].Label
     })
 
-    log.Printf("Sending completion result: %+v", items)
+    log.Printf("Sending completion result on request %s", req.ID)
     if err := conn.Reply(ctx, req.ID, lsp.CompletionList{
-        IsIncomplete: false,
+        IsIncomplete: true,
         Items:        items,
     }); err != nil {
         log.Printf("Failed to send completion result: %v", err)
