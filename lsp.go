@@ -3,9 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+        "fmt"
 	"log"
 	"os"
+        "sort"
         "sync"
+        "strings"
+        "strconv"
 
 	"github.com/sourcegraph/go-lsp"
 	"github.com/sourcegraph/jsonrpc2"
@@ -29,6 +33,7 @@ var assemblerInstructions []lsp.CompletionItem
 type server struct {
     mu        sync.Mutex
     cancelMap map[jsonrpc2.ID]context.CancelFunc
+    documents map[lsp.DocumentURI]string
 }
 
 func main() {
@@ -46,6 +51,7 @@ func main() {
     stream := jsonrpc2.NewBufferedStream(stdrwc{}, jsonrpc2.VSCodeObjectCodec{})
     conn := jsonrpc2.NewConn(context.Background(), stream, &server{
         cancelMap: make(map[jsonrpc2.ID]context.CancelFunc),
+        documents: make(map[lsp.DocumentURI]string),
     })
     defer conn.Close()
 
@@ -98,10 +104,19 @@ func (s *server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.
             log.Printf("Failed to unmarshal didOpen params: %v", err)
             return
         }
+        s.mu.Lock()
+        s.documents[params.TextDocument.URI] = params.TextDocument.Text
+        s.mu.Unlock()
         log.Printf("Document opened: %s", params.TextDocument.URI)
     case "textDocument/didChange":
-        // Handle document opening and changes if needed
-        log.Printf("Handling %s request", req.Method)
+        var params lsp.DidChangeTextDocumentParams
+        if err := json.Unmarshal(*req.Params, &params); err != nil {
+            log.Printf("Failed to unmarshal didChange params: %v", err)
+            return
+        }
+        s.mu.Lock()
+        s.documents[params.TextDocument.URI] = params.ContentChanges[len(params.ContentChanges)-1].Text
+        s.mu.Unlock()
     case "textDocument/completion":
         ctx, cancel := context.WithCancel(ctx)
         s.mu.Lock()
@@ -180,10 +195,57 @@ func (s *server) handleCompletion(ctx context.Context, conn *jsonrpc2.Conn, req 
         return
     }
 
-    items := []lsp.CompletionItem{}
-    for _, instr := range assemblerInstructions {
-        items = append(items, instr)
+    s.mu.Lock()
+    documentText, ok := s.documents[params.TextDocument.URI]
+    s.mu.Unlock()
+
+    if !ok {
+        log.Printf("Document not found: %s", params.TextDocument.URI)
+        conn.ReplyWithError(ctx, req.ID, &jsonrpc2.Error{
+            Code:    jsonrpc2.CodeInternalError,
+            Message: "Document not found",
+        })
+        return
     }
+
+    items := []lsp.CompletionItem{}
+    userInput := getTextUpToPosition(documentText, params.Position)
+    userInput = strings.TrimSpace(userInput)
+
+
+    if strings.HasPrefix(userInput, "#$") {
+        log.Println("PING")
+        // Generate hex value suggestions
+        for i := 0; i <= 255; i++ {
+            hexValue := fmt.Sprintf("#$%02X", i)
+            if strings.HasPrefix(hexValue, userInput) {
+                items = append(items, lsp.CompletionItem{
+                    Label: hexValue,
+                    Kind:  lsp.CIKValue,
+                })
+            }
+        }
+    } else {
+        log.Println("PONG")
+        // Check if the last word can be parsed as an integer and convert to hex
+        if intValue, err := strconv.Atoi(userInput); err == nil {
+            hexValue := fmt.Sprintf("#$%02X", intValue)
+            items = append(items, lsp.CompletionItem{
+                Label: hexValue,
+                Kind:  lsp.CIKValue,
+                Detail: fmt.Sprintf("Hex value of %d", intValue),
+            })
+        }
+	for _, instr := range assemblerInstructions {
+	    if strings.HasPrefix(instr.Label, userInput) {
+		items = append(items, instr)
+            }
+	}
+    }
+
+    sort.Slice(items, func(i, j int) bool {
+        return items[i].Label < items[j].Label
+    })
 
     log.Printf("Sending completion result: %+v", items)
     if err := conn.Reply(ctx, req.ID, lsp.CompletionList{
@@ -192,6 +254,26 @@ func (s *server) handleCompletion(ctx context.Context, conn *jsonrpc2.Conn, req 
     }); err != nil {
         log.Printf("Failed to send completion result: %v", err)
     }
+}
+
+func getTextUpToPosition(text string, pos lsp.Position) string {
+    lines := strings.Split(text, "\n")
+    if int(pos.Line) >= len(lines) {
+        return ""
+    }
+    line := lines[pos.Line]
+    if int(pos.Character) > len(line) {
+        return line
+    }
+    return line[:pos.Character]
+}
+
+func getLastWord(s string) string {
+    words := strings.Fields(s)
+    if len(words) == 0 {
+        return ""
+    }
+    return words[len(words)-1]
 }
 
 type stdrwc struct{}
